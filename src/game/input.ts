@@ -9,6 +9,7 @@ const CODES = [
   "ArrowRight",
   "KeyE",
   "KeyC",
+  "KeyK",
   "ShiftLeft",
   "ShiftRight",
   "Escape",

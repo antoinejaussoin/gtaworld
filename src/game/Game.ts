@@ -1,8 +1,8 @@
 import { Renderer } from "../render/Renderer";
 import type { TileCache } from "../world/cache";
 import { CollisionWorld, nearestDriveable, pushCircles } from "../world/collision";
-import { MPS_TO_MPH, TILE_ZOOM, WALK_SPEED_MPS } from "../world/config";
-import { lonLatToMercator, mercatorToLonLat, mercatorToTile, tileKey, type TileId } from "../world/project";
+import { MPS_TO_KMH, MPS_TO_MPH, TILE_ZOOM, WALK_SPEED_MPS, type SpeedUnit } from "../world/config";
+import { lonLatToMercator, mercatorToLonLat, mercatorToTile, mercatorUnitsPerGroundMeter, tileKey, type TileId } from "../world/project";
 import { TileStream } from "../world/stream";
 import type { ParkedCar } from "../world/types";
 import { stepDrive } from "./drive";
@@ -34,6 +34,8 @@ export class Game {
   private readonly taken = new Set<string>();
   private loose: ParkedCar[] = [];
   private peds: Ped[] = [];
+  private scale = 1;
+  private unit: SpeedUnit = readSpeedUnit();
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -54,6 +56,7 @@ export class Game {
   start(): void {
     this.running = true;
     this.input.attach();
+    this.canvas.addEventListener("click", this.onClick);
     this.resize();
     window.addEventListener("resize", this.resize);
     this.stream.update(this.x, this.y, 0, 0);
@@ -72,6 +75,7 @@ export class Game {
     this.running = false;
     cancelAnimationFrame(this.raf);
     this.input.detach();
+    this.canvas.removeEventListener("click", this.onClick);
     window.removeEventListener("resize", this.resize);
   }
 
@@ -86,6 +90,27 @@ export class Game {
     this.renderer.dpr = dpr;
   };
 
+  private readonly onClick = (event: MouseEvent) => {
+    const rect = this.canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    if (x >= 14 && x <= 190 && y >= 14 && y <= 100) this.toggleUnit();
+  };
+
+  private updateScale(): void {
+    this.scale = mercatorUnitsPerGroundMeter(mercatorToLonLat(this.x, this.y).lat);
+    this.collision.scale = this.scale;
+  }
+
+  private toggleUnit(): void {
+    this.unit = this.unit === "mph" ? "kmh" : "mph";
+    try {
+      localStorage.setItem("gtaworld.speedUnit", this.unit);
+    } catch {
+      // Private browsing can block storage. The choice still lasts for this drive.
+    }
+  }
+
   private tick(dt: number): void {
     this.resize();
     if (this.input.edge("Escape")) {
@@ -94,6 +119,8 @@ export class Game {
       return;
     }
     if (this.input.edge("KeyC")) this.camera = this.camera === "north" ? "follow" : "north";
+    if (this.input.edge("KeyK")) this.toggleUnit();
+    this.updateScale();
     if (this.input.edge("KeyE")) {
       if (this.mode === "car") this.exitCar();
       else this.enterCar();
@@ -117,10 +144,10 @@ export class Game {
 
     const threat = { x: this.x, y: this.y, vx: this.vx, vy: this.vy };
     for (const ped of this.peds) {
-      const near = Math.hypot(ped.x - this.x, ped.y - this.y) < 30 || ped.knock > 0;
-      stepPed(ped, dt, near ? threat : null);
+      const near = Math.hypot(ped.x - this.x, ped.y - this.y) < 30 * this.scale || ped.knock > 0;
+      stepPed(ped, dt, near ? threat : null, this.scale);
     }
-    this.loose = this.loose.filter((car) => Math.hypot(car.x - this.x, car.y - this.y) < 2500);
+    this.loose = this.loose.filter((car) => Math.hypot(car.x - this.x, car.y - this.y) < 2500 * this.scale);
 
     const follow = 1 - Math.exp(-6 * Math.max(dt, 0.001));
     this.camX += (this.x - this.camX) * follow;
@@ -137,8 +164,10 @@ export class Game {
       camX: this.camX,
       camY: this.camY,
       rot: this.camera === "follow" ? Math.PI / 2 - this.heading : 0,
+      scale: this.scale,
       hud: {
-        mph: Math.abs(this.speed) * MPS_TO_MPH,
+        speed: (Math.abs(this.speed) / this.scale) * (this.unit === "mph" ? MPS_TO_MPH : MPS_TO_KMH),
+        unit: this.unit === "mph" ? "mph" : "km/h",
         hits: this.stream.hits,
         misses: this.stream.misses,
         waiting: this.stream.waiting,
@@ -153,20 +182,28 @@ export class Game {
   }
 
   private syncCollision(): void {
-    const stamp = [...this.stream.worlds.keys()].sort().join("|");
+    const stamp = `${this.stream.revision}|${[...this.stream.worlds.keys()].sort().join("|")}`;
     if (stamp === this.collisionStamp) return;
     this.collisionStamp = stamp;
     this.collision.rebuild([...this.stream.worlds.values()]);
+    const resolved = this.collision.resolve(this.x, this.y, (this.mode === "car" ? 0.95 : 0.4) * this.scale);
+    if (resolved.blocked) {
+      this.x = resolved.x;
+      this.y = resolved.y;
+    }
   }
 
   private syncPeds(): void {
     const live = new Set(this.stream.worlds.keys());
-    this.peds = this.peds.filter((ped) => live.has(ped.tileKey));
+    this.peds = this.peds.filter((ped) => {
+      const world = this.stream.worlds.get(ped.tileKey);
+      return world !== undefined && world.buildingSource === ped.source && live.has(ped.tileKey);
+    });
     const have = new Set(this.peds.map((ped) => ped.id));
     for (const world of this.stream.worlds.values()) {
       for (const spawn of world.pedestrians) {
         if (have.has(spawn.id)) continue;
-        this.peds.push(pedFromSpawn(spawn, world.key));
+        this.peds.push(pedFromSpawn(spawn, world.key, world.buildingSource));
         have.add(spawn.id);
       }
     }
@@ -182,7 +219,7 @@ export class Game {
     const pinX = this.x;
     const pinY = this.y;
     let nearestCar: ParkedCar | null = null;
-    let nearestDistance = 80;
+    let nearestDistance = 80 * this.scale;
     for (const world of this.stream.worlds.values()) {
       for (const car of world.parked) {
         const distance = Math.hypot(car.x - pinX, car.y - pinY);
@@ -194,12 +231,13 @@ export class Game {
     }
     if (nearestCar) {
       const angles = [nearestCar.heading + Math.PI / 2, nearestCar.heading - Math.PI / 2, nearestCar.heading + Math.PI];
-      this.x = nearestCar.x + Math.cos(angles[0]) * 2.4;
-      this.y = nearestCar.y + Math.sin(angles[0]) * 2.4;
+      const beside = 2.4 * this.scale;
+      this.x = nearestCar.x + Math.cos(angles[0]) * beside;
+      this.y = nearestCar.y + Math.sin(angles[0]) * beside;
       for (const angle of angles) {
-        const spotX = nearestCar.x + Math.cos(angle) * 2.4;
-        const spotY = nearestCar.y + Math.sin(angle) * 2.4;
-        const clear = this.collision.resolve(spotX, spotY, 0.35);
+        const spotX = nearestCar.x + Math.cos(angle) * beside;
+        const spotY = nearestCar.y + Math.sin(angle) * beside;
+        const clear = this.collision.resolve(spotX, spotY, 0.35 * this.scale);
         if (!clear.blocked) {
           this.x = spotX;
           this.y = spotY;
@@ -209,14 +247,14 @@ export class Game {
       this.heading = nearestCar.heading;
     } else {
       const roads = [...this.stream.worlds.values()].flatMap((world) => world.roads);
-      const snap = nearestDriveable(pinX, pinY, roads, 80);
+      const snap = nearestDriveable(pinX, pinY, roads, 80 * this.scale);
       if (snap) {
         this.x = snap.x;
         this.y = snap.y;
         this.heading = snap.heading;
       }
     }
-    const resolved = this.collision.resolve(this.x, this.y, 0.4);
+    const resolved = this.collision.resolve(this.x, this.y, 0.4 * this.scale);
     this.x = resolved.x;
     this.y = resolved.y;
     this.camX = this.x;
@@ -239,8 +277,8 @@ export class Game {
     mx /= length;
     my /= length;
     this.heading = Math.atan2(my, mx);
-    this.speed = WALK_SPEED_MPS;
-    const moved = this.moveBody(this.x + mx * this.speed * dt, this.y + my * this.speed * dt, this.heading, 0.35, 0, null);
+    this.speed = WALK_SPEED_MPS * this.scale;
+    const moved = this.moveBody(this.x + mx * this.speed * dt, this.y + my * this.speed * dt, this.heading, 0.35 * this.scale, 0, null);
     this.x = moved.x;
     this.y = moved.y;
   }
@@ -249,18 +287,18 @@ export class Game {
     const surface = this.collision.surfaceAt(this.x, this.y);
     const cap = surface.onRoad ? surface.maxSpeed * surface.speedFactor : 8;
     const steer = (this.input.right ? 1 : 0) - (this.input.left ? 1 : 0);
-    const next = stepDrive(this.speed, this.heading, dt, {
+    const next = stepDrive(this.speed / this.scale, this.heading, dt, {
       throttle: this.input.forward,
       brake: this.input.back,
       steer,
       handbrake: this.input.handbrake,
       cap,
     });
-    this.speed = next.speed;
+    this.speed = next.speed * this.scale;
     this.heading = next.heading;
     const proposedX = this.x + Math.cos(this.heading) * this.speed * dt;
     const proposedY = this.y + Math.sin(this.heading) * this.speed * dt;
-    const moved = this.moveBody(proposedX, proposedY, this.heading, 0.95, 1.15, this.carId);
+    const moved = this.moveBody(proposedX, proposedY, this.heading, 0.95 * this.scale, 1.15 * this.scale, this.carId);
     if (moved.hit) {
       const fixX = moved.x - proposedX;
       const fixY = moved.y - proposedY;
@@ -304,8 +342,8 @@ export class Game {
     const circles: { x: number; y: number; r: number }[] = [];
     for (const car of this.iterCars()) {
       if (car.id === ignoreCar) continue;
-      if (Math.abs(car.x - x) > 6 || Math.abs(car.y - y) > 6) continue;
-      circles.push({ x: car.x, y: car.y, r: 1.15 });
+      if (Math.abs(car.x - x) > 6 * this.scale || Math.abs(car.y - y) > 6 * this.scale) continue;
+      circles.push({ x: car.x, y: car.y, r: 1.15 * this.scale });
     }
     return pushCircles(x, y, radius, circles);
   }
@@ -323,14 +361,14 @@ export class Game {
   private visibleCars(): ParkedCar[] {
     const cars: ParkedCar[] = [];
     for (const car of this.iterCars()) {
-      if (Math.hypot(car.x - this.camX, car.y - this.camY) < 160) cars.push(car);
+      if (Math.hypot(car.x - this.camX, car.y - this.camY) < 160 * this.scale) cars.push(car);
     }
     return cars;
   }
 
   private enterCar(): void {
     let best: ParkedCar | null = null;
-    let bestDistance = 3.2;
+    let bestDistance = 3.2 * this.scale;
     for (const car of this.iterCars()) {
       const distance = Math.hypot(car.x - this.x, car.y - this.y);
       if (distance < bestDistance) {
@@ -353,10 +391,10 @@ export class Game {
   private exitCar(): void {
     const left = this.heading + Math.PI / 2;
     const spot = {
-      x: this.x + Math.cos(left) * 2.1,
-      y: this.y + Math.sin(left) * 2.1,
+      x: this.x + Math.cos(left) * 2.1 * this.scale,
+      y: this.y + Math.sin(left) * 2.1 * this.scale,
     };
-    const resolved = this.collision.resolve(spot.x, spot.y, 0.35);
+    const resolved = this.collision.resolve(spot.x, spot.y, 0.35 * this.scale);
     this.loose.push({ id: this.carId, x: this.x, y: this.y, heading: this.heading, color: this.carColor });
     this.mode = "foot";
     this.x = resolved.x;
@@ -376,6 +414,8 @@ export class Game {
     cars: number;
     parked: number;
     waiting: number;
+    revision: number;
+    buildings: number;
     nearestCar: { x: number; y: number; distance: number } | null;
     blocker: { direction: string; kind: "building" | "water" } | null;
   } {
@@ -393,7 +433,7 @@ export class Game {
     let blocker: { direction: string; kind: "building" | "water" } | null = null;
     for (const distance of [3, 6, 10, 16, 24, 36]) {
       for (const [direction, dx, dy] of directions) {
-        const hit = this.collision.resolve(this.x + dx * distance, this.y + dy * distance, 0.35);
+        const hit = this.collision.resolve(this.x + dx * distance * this.scale, this.y + dy * distance * this.scale, 0.35 * this.scale);
         if (hit.building || hit.water) {
           blocker = { direction, kind: hit.building ? "building" : "water" };
           break;
@@ -413,6 +453,11 @@ export class Game {
       cars: this.visibleCars().length,
       parked: this.iterCars().length,
       waiting: this.stream.waiting,
+      revision: this.stream.revision,
+      buildings: [...this.stream.worlds.values()].reduce(
+        (count, world) => count + world.polygons.filter((poly) => poly.kind === "building").length,
+        0,
+      ),
       nearestCar,
       blocker,
     };
@@ -425,5 +470,13 @@ export class Game {
       missing.push({ id, failed: this.stream.isFailed(id) });
     }
     return missing;
+  }
+}
+
+function readSpeedUnit(): SpeedUnit {
+  try {
+    return localStorage.getItem("gtaworld.speedUnit") === "kmh" ? "kmh" : "mph";
+  } catch {
+    return "mph";
   }
 }

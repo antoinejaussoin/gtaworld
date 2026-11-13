@@ -13,6 +13,8 @@ export const CAR_LENGTH_M = 4.2;
 export const CAR_WIDTH_M = 1.8;
 export const WALK_SPEED_MPS = 1.7;
 export const MPS_TO_MPH = 2.2369362920544;
+export const MPS_TO_KMH = 3.6;
+export type SpeedUnit = "mph" | "kmh";
 
 export const ROAD_WIDTH_M: Record<string, number> = {
   motorway: 11,

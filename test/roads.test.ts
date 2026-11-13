@@ -14,7 +14,7 @@ describe("road profile", () => {
     expect(roadProfile({ class: "service" }).width).toBe(3.5);
   });
 
-  it("keeps footways walkable and unpaved roads slower", () => {
+  it("leaves footways off the driveable network and slows unpaved roads", () => {
     const footway = roadProfile({ class: "path", subclass: "footway" });
     expect(footway.driveable).toBe(false);
     expect(footway.walkable).toBe(true);
@@ -34,5 +34,6 @@ describe("stable colours", () => {
     expect(roofColor(undefined, a)).toBe(roofColor(undefined, b));
     expect(roofColor("#336699", a)).toBe("#336699");
     expect(roofColor("red", a)).toBe("#a33b32");
+    expect(roofColor("white", a)).not.toBe("#f4f1ea");
   });
 });

@@ -54,6 +54,13 @@ export function mercatorToTile(x: number, y: number, z = TILE_ZOOM): TileId {
   return normalizeTile(z, tx, ty);
 }
 
+export function tileLatLonBounds(id: TileId): { south: number; west: number; north: number; east: number } {
+  const bounds = tileBounds(id);
+  const southWest = mercatorToLonLat(bounds.minX, bounds.minY);
+  const northEast = mercatorToLonLat(bounds.maxX, bounds.maxY);
+  return { south: southWest.lat, west: southWest.lon, north: northEast.lat, east: northEast.lon };
+}
+
 export function tileBounds(id: TileId): TileBounds {
   const n = 2 ** id.z;
   const size = (ORIGIN_SHIFT * 2) / n;
@@ -92,6 +99,12 @@ export function mvtToMercator(
       y: bounds.maxY - p.y * sy,
     })),
   );
+}
+
+/** Web Mercator stretches ground distances by 1/cos(latitude). Multiply real metres by this to get world units. */
+export function mercatorUnitsPerGroundMeter(latDeg: number): number {
+  const lat = (Math.max(-85, Math.min(85, latDeg)) * Math.PI) / 180;
+  return 1 / Math.cos(lat);
 }
 
 export function formatLatLon(lat: number, lon: number): string {

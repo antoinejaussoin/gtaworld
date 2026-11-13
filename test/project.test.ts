@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ORIGIN_SHIFT, lonLatToMercator, lonLatToTile, mercatorToLonLat, mercatorToTile, tileBounds } from "../src/world/project";
+import { ORIGIN_SHIFT, lonLatToMercator, lonLatToTile, mercatorToLonLat, mercatorToTile, mercatorUnitsPerGroundMeter, tileBounds } from "../src/world/project";
 
 describe("web mercator", () => {
   it("puts the origin at 0,0 and the antimeridian at the projection edge", () => {
@@ -26,6 +26,13 @@ describe("web mercator", () => {
     expect(merc.x).toBeLessThan(bounds.maxX);
     expect(merc.y).toBeGreaterThan(bounds.minY);
     expect(merc.y).toBeLessThan(bounds.maxY);
+  });
+
+  it("stretches mercator metres back to ground metres away from the equator", () => {
+    expect(mercatorUnitsPerGroundMeter(0)).toBeCloseTo(1, 6);
+    expect(mercatorUnitsPerGroundMeter(60)).toBeCloseTo(2, 2);
+    expect(mercatorUnitsPerGroundMeter(51.5074)).toBeGreaterThan(1.6);
+    expect(mercatorUnitsPerGroundMeter(51.5074)).toBeLessThan(1.62);
   });
 
   it("indexes a point just north-east of the origin into zoom 1", () => {

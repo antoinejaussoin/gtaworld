@@ -4,6 +4,7 @@ import type { PedSpawn } from "../world/types";
 export interface Ped {
   id: string;
   tileKey: string;
+  source: string;
   path: Vec[];
   pathLength: number;
   distance: number;
@@ -17,11 +18,12 @@ export interface Ped {
   vy: number;
 }
 
-export function pedFromSpawn(spawn: PedSpawn, tileKey: string): Ped {
+export function pedFromSpawn(spawn: PedSpawn, tileKey: string, source: string): Ped {
   const at = pointAlong(spawn.path, spawn.distance);
   return {
     id: spawn.id,
     tileKey,
+    source,
     path: spawn.path,
     pathLength: polylineLength(spawn.path),
     distance: spawn.distance,
@@ -36,7 +38,12 @@ export function pedFromSpawn(spawn: PedSpawn, tileKey: string): Ped {
   };
 }
 
-export function stepPed(ped: Ped, dt: number, threat: { x: number; y: number; vx: number; vy: number } | null): void {
+export function stepPed(
+  ped: Ped,
+  dt: number,
+  threat: { x: number; y: number; vx: number; vy: number } | null,
+  scale = 1,
+): void {
   if (ped.knock > 0) {
     ped.knock -= dt;
     ped.x += ped.vx * dt;
@@ -53,7 +60,7 @@ export function stepPed(ped: Ped, dt: number, threat: { x: number; y: number; vx
     return;
   }
 
-  ped.distance += ped.dir * ped.speed * dt;
+  ped.distance += ped.dir * ped.speed * scale * dt;
   if (ped.distance >= ped.pathLength) {
     ped.distance = ped.pathLength;
     ped.dir = -1;
@@ -69,12 +76,13 @@ export function stepPed(ped: Ped, dt: number, threat: { x: number; y: number; vx
   const dx = ped.x - threat.x;
   const dy = ped.y - threat.y;
   const dist = Math.hypot(dx, dy) || 0.0001;
-  if (dist >= 1.2) return;
-  const pen = 1.2 - dist;
+  const reach = 1.2 * scale;
+  if (dist >= reach) return;
+  const pen = reach - dist;
   ped.x += (dx / dist) * pen;
   ped.y += (dy / dist) * pen;
   const impact = Math.hypot(threat.vx, threat.vy);
-  if (impact > 3.5) {
+  if (impact > 3.5 * scale) {
     ped.knock = 0.55;
     ped.vx = threat.vx * 0.8 + (dx / dist) * 2;
     ped.vy = threat.vy * 0.8 + (dy / dist) * 2;

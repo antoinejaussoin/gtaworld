@@ -1,6 +1,7 @@
 import { roadPaint } from "../world/buildWorld";
+import { isPedestrianWay } from "../world/roads";
 import { GROUND } from "../world/style";
-import { VIEW_WIDTH_M } from "../world/config";
+import { CAR_LENGTH_M, CAR_WIDTH_M, VIEW_WIDTH_M } from "../world/config";
 import { bboxIntersects, type BBox, type Vec } from "../world/geometry";
 import { formatLatLon, tileBounds, type TileId } from "../world/project";
 import type { ParkedCar, Poi, TileWorld } from "../world/types";
@@ -12,7 +13,8 @@ const ORDER_BUILDING = 13;
 const ORDER_COUNT = 16;
 
 export interface Hud {
-  mph: number;
+  speed: number;
+  unit: "mph" | "km/h";
   hits: number;
   misses: number;
   waiting: number;
@@ -25,6 +27,8 @@ export interface Hud {
 
 interface Glyph {
   path: Path2D;
+  ridge?: Path2D;
+  wall?: string;
   bbox: BBox;
   order: number;
   color: string;
@@ -41,6 +45,38 @@ interface CachedTile {
   originY: number;
   buckets: Map<string, Glyph[]>;
   large: Glyph[];
+}
+
+function ridgePath(ring: Vec[], originX: number, originY: number): Path2D | null {
+  const closed = ring.length > 2 && ring[0].x === ring[ring.length - 1].x && ring[0].y === ring[ring.length - 1].y;
+  const count = closed ? ring.length - 1 : ring.length;
+  if (count < 3) return null;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < count; i++) {
+    cx += ring[i].x;
+    cy += ring[i].y;
+  }
+  cx /= count;
+  cy /= count;
+  let bestLen = 0;
+  let angle = 0;
+  for (let i = 0; i < count; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % count];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len > bestLen) {
+      bestLen = len;
+      angle = Math.atan2(b.y - a.y, b.x - a.x);
+    }
+  }
+  const span = Math.max(2.4, bestLen * 0.62);
+  const dx = Math.cos(angle) * span * 0.5;
+  const dy = Math.sin(angle) * span * 0.5;
+  const path = new Path2D();
+  path.moveTo(cx - dx - originX, cy - dy - originY);
+  path.lineTo(cx + dx - originX, cy + dy - originY);
+  return path;
 }
 
 function linePath(points: Vec[], originX: number, originY: number): Path2D {
@@ -95,17 +131,21 @@ function bake(world: TileWorld): CachedTile {
       : poly.kind === "paved" ? 4
       : poly.kind === "aeroway" ? 5
       : ORDER_BUILDING;
-    const shadow = poly.kind === "building" ? Math.min(poly.height, 70) * 0.28 : 0;
+    const span = Math.max(poly.bbox.maxX - poly.bbox.minX, poly.bbox.maxY - poly.bbox.minY);
+    const house = poly.kind === "building" && poly.height < 16 && span < 120;
+    const shadow = poly.kind === "building" ? Math.min(poly.height, 70) * 0.42 : 0;
     add({
       path: ringPath(poly.rings, originX, originY),
+      ridge: house ? ridgePath(poly.rings[0], originX, originY) ?? undefined : undefined,
+      wall: poly.kind === "building" ? (house ? "#3c322b" : "#3a4048") : undefined,
       bbox: poly.bbox,
       order,
       color: poly.color,
       mode: "fill",
       width: 0,
       height: poly.height,
-      shadowDx: shadow * 0.7,
-      shadowDy: -shadow * 0.7,
+      shadowDx: shadow * 0.75,
+      shadowDy: -shadow * 0.75,
       stamp: 0,
     });
   }
@@ -127,6 +167,7 @@ function bake(world: TileWorld): CachedTile {
   }
 
   for (const road of world.roads) {
+    if (isPedestrianWay(road.roadClass, road.subclass)) continue;
     const paint = roadPaint(road);
     const path = linePath(road.points, originX, originY);
     let casingOrder = 10;
@@ -180,10 +221,11 @@ function setTileTransform(
   camY: number,
   canvas: HTMLCanvasElement,
   rot: number,
+  scale: number,
 ): void {
   const ox = originX - camX;
   const oy = originY - camY;
-  const ppm = canvas.width / VIEW_WIDTH_M;
+  const ppm = canvas.width / (VIEW_WIDTH_M * scale);
   const cos = Math.cos(rot);
   const sin = Math.sin(rot);
   const a = ppm * cos;
@@ -200,10 +242,11 @@ function projectPoint(
   camY: number,
   canvas: HTMLCanvasElement,
   rot: number,
+  scale: number,
 ): { sx: number; sy: number } {
   const dx = x - camX;
   const dy = y - camY;
-  const ppm = canvas.width / VIEW_WIDTH_M;
+  const ppm = canvas.width / (VIEW_WIDTH_M * scale);
   const cos = Math.cos(rot);
   const sin = Math.sin(rot);
   return {
@@ -212,26 +255,45 @@ function projectPoint(
   };
 }
 
-function drawVehicle(ctx: CanvasRenderingContext2D, x: number, y: number, heading: number, color: string): void {
+function drawVehicle(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  heading: number,
+  color: string,
+  scale: number,
+): void {
   const fx = Math.cos(heading);
   const fy = Math.sin(heading);
   const rx = -fy;
   const ry = fx;
+  const halfLength = (CAR_LENGTH_M / 2) * scale;
+  const halfWidth = (CAR_WIDTH_M / 2) * scale;
   const corner = (along: number, side: number) => ({
     x: x + fx * along + rx * side,
     y: y + fy * along + ry * side,
   });
-  const body = [corner(2.1, 0.9), corner(2.1, -0.9), corner(-2.1, -0.9), corner(-2.1, 0.9)];
+  const body = [
+    corner(halfLength, halfWidth),
+    corner(halfLength, -halfWidth),
+    corner(-halfLength, -halfWidth),
+    corner(-halfLength, halfWidth),
+  ];
   ctx.beginPath();
   ctx.moveTo(body[0].x, body[0].y);
   for (let i = 1; i < body.length; i++) ctx.lineTo(body[i].x, body[i].y);
   ctx.closePath();
   ctx.fillStyle = color;
   ctx.fill();
-  ctx.lineWidth = 0.16;
+  ctx.lineWidth = 0.16 * scale;
   ctx.strokeStyle = "#17191c";
   ctx.stroke();
-  const glass = [corner(1.2, 0.62), corner(1.2, -0.62), corner(0.2, -0.62), corner(0.2, 0.62)];
+  const glass = [
+    corner(halfLength * 0.55, halfWidth * 0.7),
+    corner(halfLength * 0.55, -halfWidth * 0.7),
+    corner(halfLength * 0.1, -halfWidth * 0.7),
+    corner(halfLength * 0.1, halfWidth * 0.7),
+  ];
   ctx.beginPath();
   ctx.moveTo(glass[0].x, glass[0].y);
   for (let i = 1; i < glass.length; i++) ctx.lineTo(glass[i].x, glass[i].y);
@@ -240,22 +302,22 @@ function drawVehicle(ctx: CanvasRenderingContext2D, x: number, y: number, headin
   ctx.fill();
 }
 
-function drawWalker(ctx: CanvasRenderingContext2D, x: number, y: number, heading: number): void {
+function drawWalker(ctx: CanvasRenderingContext2D, x: number, y: number, heading: number, scale: number): void {
   ctx.beginPath();
-  ctx.arc(x, y, 1.5, 0, Math.PI * 2);
-  ctx.lineWidth = 0.18;
+  ctx.arc(x, y, 1.5 * scale, 0, Math.PI * 2);
+  ctx.lineWidth = 0.18 * scale;
   ctx.strokeStyle = "#241c08";
   ctx.stroke();
   ctx.beginPath();
-  ctx.arc(x, y, 0.55, 0, Math.PI * 2);
+  ctx.arc(x, y, 0.45 * scale, 0, Math.PI * 2);
   ctx.fillStyle = "#f0d34a";
   ctx.fill();
-  ctx.lineWidth = 0.12;
+  ctx.lineWidth = 0.12 * scale;
   ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(x + Math.cos(heading) * 0.72, y + Math.sin(heading) * 0.72);
-  ctx.lineTo(x + Math.cos(heading + 2.4) * 0.22, y + Math.sin(heading + 2.4) * 0.22);
-  ctx.lineTo(x + Math.cos(heading - 2.4) * 0.22, y + Math.sin(heading - 2.4) * 0.22);
+  ctx.moveTo(x + Math.cos(heading) * 0.72 * scale, y + Math.sin(heading) * 0.72 * scale);
+  ctx.lineTo(x + Math.cos(heading + 2.4) * 0.22 * scale, y + Math.sin(heading + 2.4) * 0.22 * scale);
+  ctx.lineTo(x + Math.cos(heading - 2.4) * 0.22 * scale, y + Math.sin(heading - 2.4) * 0.22 * scale);
   ctx.closePath();
   ctx.fill();
 }
@@ -276,6 +338,7 @@ export class Renderer {
     camX: number;
     camY: number;
     rot: number;
+    scale: number;
     hud: Hud;
   }): void {
     const ctx = this.canvas.getContext("2d");
@@ -287,18 +350,23 @@ export class Renderer {
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
 
-    this.drawHatches(ctx, args.missing, args.camX, args.camY, args.rot);
-    this.drawWorld(ctx, args.worlds, args.camX, args.camY, args.rot);
+    this.drawHatches(ctx, args.missing, args.camX, args.camY, args.rot, args.scale);
+    this.drawWorld(ctx, args.worlds, args.camX, args.camY, args.rot, args.scale);
     this.drawActors(ctx, args);
     this.drawLabels(ctx, args);
     this.drawHud(ctx, args);
   }
 
+  private token(world: TileWorld): string {
+    return `${world.key}:${world.buildingSource}`;
+  }
+
   private sync(worlds: TileWorld[]): void {
     const live = new Set<string>();
     for (const world of worlds) {
-      live.add(world.key);
-      if (!this.cache.has(world.key)) this.cache.set(world.key, bake(world));
+      const token = this.token(world);
+      live.add(token);
+      if (!this.cache.has(token)) this.cache.set(token, bake(world));
     }
     for (const key of this.cache.keys()) {
       if (!live.has(key)) this.cache.delete(key);
@@ -311,9 +379,10 @@ export class Renderer {
     camX: number,
     camY: number,
     rot: number,
+    scale: number,
   ): void {
     if (missing.length === 0) return;
-    setTileTransform(ctx, camX, camY, camX, camY, this.canvas, rot);
+    setTileTransform(ctx, camX, camY, camX, camY, this.canvas, rot, scale);
     for (const tile of missing) {
       const bounds = tileBounds(tile.id);
       const x = bounds.minX - camX;
@@ -327,7 +396,7 @@ export class Renderer {
       ctx.fillStyle = tile.failed ? "rgba(120, 48, 36, 0.28)" : "rgba(40, 42, 28, 0.16)";
       ctx.fillRect(x, y, w, h);
       ctx.strokeStyle = tile.failed ? "rgba(90, 32, 24, 0.45)" : "rgba(60, 55, 30, 0.35)";
-      ctx.lineWidth = 1.4;
+      ctx.lineWidth = 1.4 * scale;
       const step = 22;
       for (let i = -h; i < w; i += step) {
         ctx.beginPath();
@@ -345,10 +414,11 @@ export class Renderer {
     camX: number,
     camY: number,
     rot: number,
+    scale: number,
   ): void {
-    const halfW = VIEW_WIDTH_M / 2;
+    const halfW = (VIEW_WIDTH_M * scale) / 2;
     const halfH = halfW * (this.canvas.height / Math.max(1, this.canvas.width));
-    const reach = Math.hypot(halfW, halfH) + 30;
+    const reach = Math.hypot(halfW, halfH) + 30 * scale;
     const view: BBox = { minX: camX - reach, minY: camY - reach, maxX: camX + reach, maxY: camY + reach };
     const x0 = Math.floor(view.minX / BUCKET);
     const x1 = Math.floor(view.maxX / BUCKET);
@@ -363,15 +433,14 @@ export class Renderer {
       if (!bboxIntersects(glyph.bbox, view)) return;
       glyph.stamp = stamp;
       if (order === ORDER_BUILDING) buildings.push({ tile, glyph });
-      else this.paint(ctx, glyph);
+      else this.paint(ctx, glyph, scale);
     };
 
     for (let order = 0; order < ORDER_COUNT; order++) {
-      if (order === ORDER_BUILDING) continue;
       for (const world of worlds) {
-        const tile = this.cache.get(world.key);
+        const tile = this.cache.get(this.token(world));
         if (!tile) continue;
-        setTileTransform(ctx, tile.originX, tile.originY, camX, camY, this.canvas, rot);
+        setTileTransform(ctx, tile.originX, tile.originY, camX, camY, this.canvas, rot, scale);
         for (const glyph of tile.large) consider(tile, glyph, order);
         for (let x = x0; x <= x1; x++) {
           for (let y = y0; y <= y1; y++) {
@@ -385,31 +454,37 @@ export class Renderer {
 
     buildings.sort((a, b) => a.glyph.height - b.glyph.height);
     for (const item of buildings) {
-      setTileTransform(ctx, item.tile.originX, item.tile.originY, camX, camY, this.canvas, rot);
+      setTileTransform(ctx, item.tile.originX, item.tile.originY, camX, camY, this.canvas, rot, scale);
       ctx.save();
-      ctx.translate(item.glyph.shadowDx, item.glyph.shadowDy);
-      ctx.fillStyle = "rgba(48, 42, 28, 0.32)";
+      ctx.translate(item.glyph.shadowDx * scale, item.glyph.shadowDy * scale);
+      ctx.fillStyle = "rgba(36, 28, 20, 0.42)";
       ctx.fill(item.glyph.path, "evenodd");
       ctx.restore();
     }
     for (const item of buildings) {
-      setTileTransform(ctx, item.tile.originX, item.tile.originY, camX, camY, this.canvas, rot);
+      setTileTransform(ctx, item.tile.originX, item.tile.originY, camX, camY, this.canvas, rot, scale);
+      ctx.lineJoin = "miter";
+      ctx.lineWidth = 2.4 * scale;
+      ctx.strokeStyle = item.glyph.wall ?? "#3c322b";
+      ctx.stroke(item.glyph.path);
       ctx.fillStyle = item.glyph.color;
       ctx.fill(item.glyph.path, "evenodd");
-      ctx.lineWidth = 0.55;
-      ctx.strokeStyle = "#2c2924";
-      ctx.stroke(item.glyph.path);
+      if (item.glyph.ridge) {
+        ctx.lineWidth = 0.85 * scale;
+        ctx.strokeStyle = "rgba(255, 244, 230, 0.55)";
+        ctx.stroke(item.glyph.ridge);
+      }
     }
   }
 
-  private paint(ctx: CanvasRenderingContext2D, glyph: Glyph): void {
+  private paint(ctx: CanvasRenderingContext2D, glyph: Glyph, scale: number): void {
     if (glyph.mode === "fill") {
       ctx.fillStyle = glyph.color;
       ctx.fill(glyph.path, "evenodd");
       return;
     }
     ctx.strokeStyle = glyph.color;
-    ctx.lineWidth = glyph.width;
+    ctx.lineWidth = glyph.width * scale;
     ctx.stroke(glyph.path);
   }
 
@@ -422,50 +497,54 @@ export class Renderer {
       camX: number;
       camY: number;
       rot: number;
+      scale: number;
     },
   ): void {
-    setTileTransform(ctx, args.camX, args.camY, args.camX, args.camY, this.canvas, args.rot);
+    setTileTransform(ctx, args.camX, args.camY, args.camX, args.camY, this.canvas, args.rot, args.scale);
+    const reach = 140 * args.scale;
     for (const ped of args.peds) {
       const dx = ped.x - args.camX;
       const dy = ped.y - args.camY;
-      if (dx * dx + dy * dy > 140 * 140) continue;
+      if (dx * dx + dy * dy > reach * reach) continue;
       ctx.beginPath();
-      ctx.arc(dx, dy, 0.32, 0, Math.PI * 2);
+      ctx.arc(dx, dy, 0.32 * args.scale, 0, Math.PI * 2);
       ctx.fillStyle = ped.color;
       ctx.fill();
-      ctx.lineWidth = 0.08;
+      ctx.lineWidth = 0.08 * args.scale;
       ctx.strokeStyle = "#241f1a";
       ctx.stroke();
     }
     for (const car of args.cars) {
-      drawVehicle(ctx, car.x - args.camX, car.y - args.camY, car.heading, car.color);
+      drawVehicle(ctx, car.x - args.camX, car.y - args.camY, car.heading, car.color, args.scale);
     }
     if (args.player.mode === "car") {
-      drawVehicle(ctx, args.player.x - args.camX, args.player.y - args.camY, args.player.heading, args.player.color);
+      drawVehicle(ctx, args.player.x - args.camX, args.player.y - args.camY, args.player.heading, args.player.color, args.scale);
     } else {
-      drawWalker(ctx, args.player.x - args.camX, args.player.y - args.camY, args.player.heading);
+      drawWalker(ctx, args.player.x - args.camX, args.player.y - args.camY, args.player.heading, args.scale);
     }
   }
 
   private drawLabels(
     ctx: CanvasRenderingContext2D,
-    args: { worlds: TileWorld[]; camX: number; camY: number; rot: number },
+    args: { worlds: TileWorld[]; camX: number; camY: number; rot: number; scale: number },
   ): void {
     const labels: { sx: number; sy: number; text: string; water: boolean }[] = [];
     const pois: { sx: number; sy: number; poi: Poi }[] = [];
+    const labelReach = 120 * args.scale;
+    const poiReach = 130 * args.scale;
     for (const world of args.worlds) {
       for (const label of world.labels) {
         const dx = label.x - args.camX;
         const dy = label.y - args.camY;
-        if (dx * dx + dy * dy > 120 * 120) continue;
-        const p = projectPoint(label.x, label.y, args.camX, args.camY, this.canvas, args.rot);
+        if (dx * dx + dy * dy > labelReach * labelReach) continue;
+        const p = projectPoint(label.x, label.y, args.camX, args.camY, this.canvas, args.rot, args.scale);
         labels.push({ sx: p.sx, sy: p.sy, text: label.text, water: label.kind === "water" });
       }
       for (const poi of world.pois) {
         const dx = poi.x - args.camX;
         const dy = poi.y - args.camY;
-        if (dx * dx + dy * dy > 130 * 130) continue;
-        const p = projectPoint(poi.x, poi.y, args.camX, args.camY, this.canvas, args.rot);
+        if (dx * dx + dy * dy > poiReach * poiReach) continue;
+        const p = projectPoint(poi.x, poi.y, args.camX, args.camY, this.canvas, args.rot, args.scale);
         pois.push({ sx: p.sx, sy: p.sy, poi });
       }
     }
@@ -504,6 +583,7 @@ export class Renderer {
       player: { x: number; y: number; heading: number };
       camX: number;
       camY: number;
+      scale: number;
       hud: Hud;
     },
   ): void {
@@ -518,9 +598,9 @@ export class Renderer {
     ctx.fill();
     ctx.fillStyle = "#f6f1e4";
     ctx.font = "700 36px ui-sans-serif, system-ui, sans-serif";
-    ctx.fillText(String(Math.round(Math.abs(args.hud.mph))), 26, 20);
+    ctx.fillText(String(Math.round(Math.abs(args.hud.speed))), 26, 20);
     ctx.font = "600 14px ui-sans-serif, system-ui, sans-serif";
-    ctx.fillText("mph", 108, 40);
+    ctx.fillText(args.hud.unit, 108, 40);
     ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
     ctx.fillStyle = "#d9d0bc";
     ctx.fillText(args.hud.mode === "car" ? "driving" : "on foot", 26, 64);
@@ -530,7 +610,7 @@ export class Renderer {
     ctx.fill();
     ctx.fillStyle = "#f6f1e4";
     ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
-    ctx.fillText("WASD move    E enter/exit    Shift handbrake    C camera    Esc map", 26, height - 66);
+    ctx.fillText("WASD move   E car   Shift handbrake   C camera   K unit   Esc map", 26, height - 66);
     ctx.fillStyle = "#d9d0bc";
     ctx.fillText("© OpenStreetMap  © OpenFreeMap", 26, height - 44);
     ctx.fillText(
@@ -561,7 +641,7 @@ export class Renderer {
     ctx: CanvasRenderingContext2D,
     width: number,
     height: number,
-    args: { worlds: TileWorld[]; player: { x: number; y: number; heading: number } },
+    args: { worlds: TileWorld[]; player: { x: number; y: number; heading: number }; scale: number },
   ): void {
     const size = 150;
     const x0 = width - size - 16;
@@ -569,7 +649,7 @@ export class Renderer {
     ctx.fillStyle = "rgba(22, 24, 18, 0.78)";
     roundRect(ctx, x0, y0, size, size, 12);
     ctx.fill();
-    const span = 900;
+    const span = 900 * args.scale;
     const scale = (size - 16) / span;
     const cx = x0 + size / 2;
     const cy = y0 + size / 2;

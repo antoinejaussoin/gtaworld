@@ -78,6 +78,8 @@ export interface TileWorld {
   key: string;
   id: TileId;
   bounds: TileBounds;
+  /** "map" is the vector-tile sample. "osm" is the full building footprints. */
+  buildingSource: "map" | "osm";
   roads: Road[];
   polygons: PolyShape[];
   strokes: StrokeLine[];

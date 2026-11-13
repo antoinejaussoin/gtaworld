@@ -52,6 +52,11 @@ export function isRailway(roadClass: string, subclass: string): boolean {
   return RAIL_SUB.has(subclass) || roadClass === "rail" || roadClass === "transit" || roadClass.includes("rail");
 }
 
+/** Footways, cycleways, steps, and other paths. Streets and tracks stay. */
+export function isPedestrianWay(roadClass: string, subclass: string): boolean {
+  return roadClass === "path" || WALK_ONLY_SUB.has(subclass);
+}
+
 export function roadProfile(props: {
   class?: string;
   subclass?: string;
@@ -63,7 +68,7 @@ export function roadProfile(props: {
   const subclass = props.subclass ?? "";
   const railway = isRailway(roadClass, subclass);
   const construction = roadClass.endsWith("_construction");
-  const walkOnly = WALK_ONLY_SUB.has(subclass) || roadClass === "path";
+  const walkOnly = isPedestrianWay(roadClass, subclass);
   const driveable = !railway && !construction && !walkOnly && DRIVE.has(roadClass);
   const walkable = !railway && !construction && (driveable || walkOnly || roadClass === "track");
   let width = ROAD_WIDTH_M[roadClass] ?? (walkOnly ? 1.6 : 4);

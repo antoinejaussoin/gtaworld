@@ -1,7 +1,7 @@
 import { bboxOfPoints, bboxOfRings, offsetPolyline, pointInRings, polygonParts, polylineLength, walkSamples, type Vec } from "./geometry";
 import { hashParts, mulberry32 } from "./hash";
 import { tileBounds, tileKey, type TileId } from "./project";
-import { roadProfile } from "./roads";
+import { isPedestrianWay, roadProfile } from "./roads";
 import {
   CAR_COLOURS,
   PED_COLOURS,
@@ -15,7 +15,7 @@ import {
 import type { DecodedFeature, ParkedCar, PedSpawn, PolyShape, Road, StrokeLine, TileWorld } from "./types";
 
 const PARK_CLASSES = new Set(["minor", "service"]);
-const PED_CLASSES = new Set(["minor", "service", "path"]);
+const PED_CLASSES = new Set(["minor", "service"]);
 const MAJOR_LABEL = new Set(["motorway", "trunk", "primary", "secondary", "tertiary"]);
 const MAX_CARS = 100;
 const MAX_PEDS = 70;
@@ -81,7 +81,11 @@ function poiKind(feature: DecodedFeature): "fuel" | "parking" | "station" | null
   return null;
 }
 
-export function buildTileWorld(id: TileId, features: DecodedFeature[]): TileWorld {
+export function buildTileWorld(
+  id: TileId,
+  features: DecodedFeature[],
+  buildingSource: "map" | "osm" = "map",
+): TileWorld {
   const key = tileKey(id);
   const roads: Road[] = [];
   const polygons: PolyShape[] = [];
@@ -227,6 +231,7 @@ export function buildTileWorld(id: TileId, features: DecodedFeature[]): TileWorl
     if (feature.layer === "transportation" && feature.type === 2) {
       const cls = propString(feature.properties, "class");
       const sub = propString(feature.properties, "subclass");
+      if (isPedestrianWay(cls, sub)) continue;
       const profile = roadProfile({
         class: cls,
         subclass: sub,
@@ -301,6 +306,7 @@ export function buildTileWorld(id: TileId, features: DecodedFeature[]): TileWorl
     key,
     id,
     bounds: tileBounds(id),
+    buildingSource,
     roads,
     polygons,
     strokes,

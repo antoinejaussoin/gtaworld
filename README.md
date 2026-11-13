@@ -23,6 +23,7 @@ Open http://127.0.0.1:1420. The first visit to a place needs a connection. Tiles
 | E | Enter or exit the nearest car |
 | Shift | Handbrake |
 | C | Toggle the camera between north-up and behind the car |
+| K, or click the speed | Switch between mph and km/h |
 | Esc | Return to the pin map |
 
 Search uses Nominatim. Map tiles are the pinned OpenFreeMap planet `20261101_080013_pt` (OpenMapTiles, zoom 14). Change `SNAPSHOT` in [src/world/config.ts](src/world/config.ts) when you want a newer extract. Until you do, the world stays put.

@@ -52,6 +52,7 @@ export class TileStream {
   readonly worlds = new Map<string, TileWorld>();
   hits = 0;
   misses = 0;
+  revision = 0;
   private readonly inflight = new Set<string>();
   private readonly retryAt = new Map<string, number>();
   private readonly failures = new Map<string, number>();
@@ -87,6 +88,7 @@ export class TileStream {
       const ahead = mercatorToTile(x + (vx / speed) * 1800, y + (vy / speed) * 1800, TILE_ZOOM);
       if (!tiles.some((tile) => tile.x === ahead.x && tile.y === ahead.y)) tiles.push(ahead);
     }
+    tiles.sort((a, b) => tileChebyshev(a, center) - tileChebyshev(b, center));
     return tiles;
   }
 
@@ -118,7 +120,7 @@ export class TileStream {
         .finally(() => {
           this.inflight.delete(key);
         });
-    }
+      }
   }
 }
 

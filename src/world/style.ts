@@ -2,7 +2,7 @@ import { hashGeometry } from "./hash";
 
 export const GROUND = "#b3b07a";
 
-const ROOF_PALETTE = ["#f4f0e6", "#efe4d4", "#e7dcc8", "#f7f3ea", "#ddd4c4", "#e8d3b8", "#f0ebe3"];
+const ROOF_PALETTE = ["#c45c45", "#8d4e34", "#6e767f", "#a35448", "#d9c4a2", "#7a8490", "#b85a3d"];
 
 const NAMED_COLOURS: Record<string, string> = {
   white: "#f4f1ea",
@@ -31,7 +31,7 @@ const LANDCOVER: Record<string, string> = {
 };
 
 const LANDUSE: Record<string, string> = {
-  residential: "#b7ad98",
+  residential: "#8f876f",
   commercial: "#d2c3ae",
   industrial: "#b5b0a6",
   retail: "#d8c6b2",
@@ -91,12 +91,25 @@ export function roadColors(roadClass: string, tunnel: boolean, bridge: boolean):
   return { casing: "#2a2d31", fill: "#4e545c" };
 }
 
+function luminance(hex: string): number {
+  const value = Number.parseInt(hex.slice(1), 16);
+  const red = (value >> 16) & 255;
+  const green = (value >> 8) & 255;
+  const blue = value & 255;
+  return (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
+}
+
+function explicitColour(colour: unknown): string | null {
+  if (typeof colour !== "string") return null;
+  const text = colour.trim().toLowerCase();
+  if (/^#?[0-9a-f]{6}$/i.test(text)) return text.startsWith("#") ? text : `#${text}`;
+  return NAMED_COLOURS[text] ?? null;
+}
+
 export function roofColor(colour: unknown, footprint: { x: number; y: number }[]): string {
-  if (typeof colour === "string" && colour.trim()) {
-    const text = colour.trim().toLowerCase();
-    if (/^#?[0-9a-f]{6}$/i.test(text)) return text.startsWith("#") ? text : `#${text}`;
-    if (NAMED_COLOURS[text]) return NAMED_COLOURS[text];
-  }
+  const resolved = explicitColour(colour);
+  // Pale map colours disappear into the lots, so those footprints take a house colour.
+  if (resolved && luminance(resolved) <= 0.62) return resolved;
   return ROOF_PALETTE[hashGeometry(footprint) % ROOF_PALETTE.length];
 }
 

@@ -192,6 +192,8 @@ function addIndex(grid: Map<string, number[]>, keys: string[], index: number): v
 }
 
 export class CollisionWorld {
+  /** Mercator units per real metre at the player. Road widths are stored in real metres. */
+  scale = 1;
   private solids: Solid[] = [];
   private largeSolids: Solid[] = [];
   private segments: Segment[] = [];
@@ -309,20 +311,20 @@ export class CollisionWorld {
   }
 
   bridgeAt(x: number, y: number): boolean {
-    for (const segment of this.segmentsNear(x, y, 20)) {
+    for (const segment of this.segmentsNear(x, y, 20 * this.scale)) {
       if (!segment.bridge || !segment.walkable) continue;
       const hit = closestOnSegment(x, y, segment.ax, segment.ay, segment.bx, segment.by);
-      if (hit.distance <= segment.width / 2 + 1.2) return true;
+      if (hit.distance <= (segment.width / 2 + 1.2) * this.scale) return true;
     }
     return false;
   }
 
   surfaceAt(x: number, y: number): Surface {
     let best: { distance: number; segment: Segment } | null = null;
-    for (const segment of this.segmentsNear(x, y, 18)) {
+    for (const segment of this.segmentsNear(x, y, 18 * this.scale)) {
       if (!segment.driveable) continue;
       const hit = closestOnSegment(x, y, segment.ax, segment.ay, segment.bx, segment.by);
-      const limit = segment.width / 2 + 1.5;
+      const limit = (segment.width / 2 + 1.5) * this.scale;
       if (hit.distance <= limit && (!best || hit.distance < best.distance)) best = { distance: hit.distance, segment };
     }
     if (!best) return { onRoad: false, speedFactor: 1, maxSpeed: 8, roadClass: "", bridge: false };
@@ -337,7 +339,23 @@ export class CollisionWorld {
 
   resolve(x: number, y: number, radius: number): CircleHit {
     const ignoreWater = this.bridgeAt(x, y);
-    return pushOutOfSolids(x, y, radius, this.solidsNear(x, y, Math.max(radius, 8)), ignoreWater);
+    const solids = this.solidsNear(x, y, Math.max(radius, 8 * this.scale)).map((solid) => this.scaledSolid(solid));
+    return pushOutOfSolids(x, y, radius, solids, ignoreWater);
+  }
+
+  private scaledSolid(solid: Solid): Solid {
+    if (!solid.capsule || this.scale === 1) return solid;
+    const radius = solid.capsule.radius * this.scale;
+    return {
+      ...solid,
+      capsule: { ...solid.capsule, radius },
+      bbox: {
+        minX: solid.bbox.minX - radius,
+        minY: solid.bbox.minY - radius,
+        maxX: solid.bbox.maxX + radius,
+        maxY: solid.bbox.maxY + radius,
+      },
+    };
   }
 }
 
